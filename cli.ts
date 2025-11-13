@@ -65,11 +65,7 @@ const db = new PGlite({
   extensions: { hstore },
 });
 
-const handler = new PGLiteSocketHandler({
-  db,
-  closeOnDetach: true,
-  inspect: false,
-});
+const mutex = new Int32Array(new SharedArrayBuffer(Uint32Array.BYTES_PER_ELEMENT));
 
 const server = createServer();
 server.on("connection", (socket) => {
@@ -106,13 +102,35 @@ server.on("connection", (socket) => {
     socket.off("readable", onreadable);
     socket.pause();
 
-    db.waitReady.then(() => {
-      socket.resume();
-      handler.attach(socket).catch((err) => {
-        console.error(err);
-        socket.end();
+    (async () => {
+      await db.waitReady;
+
+      while (Atomics.compareExchange(mutex, 0, 0, 1) !== 0) {
+        const { value } = Atomics.waitAsync(mutex, 0, 1);
+        await value;
+      }
+
+      const handler = new PGLiteSocketHandler({
+        db,
+        closeOnDetach: true,
+        inspect: args.values.verbose,
+        debug: args.values.verbose,
       });
-    });
+
+      handler.addEventListener("close", () => {
+        if (Atomics.compareExchange(mutex, 0, 1, 0) !== 1) {
+          throw new Error("Failed to unlock");
+        }
+      });
+
+      socket.resume();
+      try {
+        await handler.attach(socket);
+      } catch (e) {
+        socket.end();
+        throw e;
+      }
+    })().catch(console.error);
   }
 
   socket.on("readable", onreadable);
