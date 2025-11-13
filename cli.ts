@@ -5,6 +5,7 @@ import { createServer } from "node:net";
 import { Buffer } from "node:buffer";
 import { parseArgs } from "node:util";
 import { PGlite } from "npm:@electric-sql/pglite@0.3.14";
+import { hstore } from "npm:@electric-sql/pglite@0.3.14/contrib/hstore";
 import { PGLiteSocketHandler } from "npm:@electric-sql/pglite-socket@0.0.19";
 
 const args = parseArgs({
@@ -61,6 +62,7 @@ const host = args.values.host ?? "";
 const db = new PGlite({
   dataDir: args.values.db,
   debug: args.values.verbose ? 1 : 0,
+  extensions: { hstore },
 });
 
 const handler = new PGLiteSocketHandler({
