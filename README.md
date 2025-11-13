@@ -3,5 +3,5 @@
 ## Usage
 
 ```
-deno run --allow-read --allow-net https://raw.githubusercontent.com/ysuzuki-bysystems/pglite-socket-no-ssl/refs/tags/v1.0.0/cli.ts
+deno run --allow-read --allow-net https://raw.githubusercontent.com/ysuzuki-bysystems/pglite-socket-no-ssl/refs/tags/v1.0.1/cli.ts
 ```
