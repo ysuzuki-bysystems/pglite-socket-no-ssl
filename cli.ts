@@ -1,12 +1,11 @@
 #!/usr/bin/env -S deno run --allow-read --allow-net
 
 import process from "node:process";
-import { createServer } from "node:net";
-import { Buffer } from "node:buffer";
 import { parseArgs } from "node:util";
+
 import { PGlite } from "npm:@electric-sql/pglite@0.3.14";
 import { hstore } from "npm:@electric-sql/pglite@0.3.14/contrib/hstore";
-import { PGLiteSocketHandler } from "npm:@electric-sql/pglite-socket@0.0.19";
+import { PGLiteSocketServer } from "npm:@electric-sql/pglite-socket@0.0.19";
 
 const args = parseArgs({
   options: {
@@ -59,90 +58,63 @@ if (!Number.isInteger(port) || port < 0) {
 
 const host = args.values.host ?? "";
 
-const db = new PGlite({
-  dataDir: args.values.db,
-  debug: args.values.verbose ? 1 : 0,
-  extensions: { hstore },
-});
+const db = new class extends PGlite {
+  constructor() {
+    super({
+      extensions: { hstore },
+    });
+  }
 
-const mutex = new Int32Array(new SharedArrayBuffer(Uint32Array.BYTES_PER_ELEMENT));
-
-const server = createServer();
-server.on("connection", (socket) => {
-  console.log(`< ${socket.remoteAddress}:${socket.remotePort}`);
-  socket.on(
-    "close",
-    () => console.log(`> ${socket.remoteAddress}:${socket.remotePort}`),
-  );
-
-  let buf = Buffer.alloc(0);
-  function onreadable() {
-    let chunk: Buffer;
-    while (buf.length < 8 && (chunk = socket.read()) !== null) {
-      buf = Buffer.concat([buf, chunk]);
-    }
-
-    if (buf.length < 8) {
-      return;
-    }
-
+  override execProtocolRawSync(message: Uint8Array): Uint8Array {
+    // SSLRequest (F)
     if (
-      Buffer.of(0x00, 0x00, 0x00, 0x08, 0x04, 0xd2, 0x16, 0x2f).equals(
-        buf.subarray(0, 8),
-      )
+      message.length === 8 &&
+      message[0] === 0x00 &&
+      message[1] === 0x00 &&
+      message[2] === 0x00 &&
+      message[3] === 0x08 &&
+      message[4] === 0x04 &&
+      message[5] === 0xd2 &&
+      message[6] === 0x16 &&
+      message[7] === 0x2f
     ) {
-      socket.write(Buffer.from("N"));
-      buf = buf.subarray(8);
+      return Uint8Array.of(0x4e); // N
     }
 
-    if (buf.length > 0) {
-      socket.unshift(buf);
-    }
-
-    socket.off("readable", onreadable);
-    socket.pause();
-
-    (async () => {
-      await db.waitReady;
-
-      while (Atomics.compareExchange(mutex, 0, 0, 1) !== 0) {
-        const { value } = Atomics.waitAsync(mutex, 0, 1);
-        await value;
-      }
-
-      const handler = new PGLiteSocketHandler({
-        db,
-        closeOnDetach: true,
-        inspect: args.values.verbose,
-        debug: args.values.verbose,
-      });
-
-      handler.addEventListener("close", () => {
-        if (Atomics.compareExchange(mutex, 0, 1, 0) !== 1) {
-          throw new Error("Failed to unlock");
-        }
-      });
-
-      socket.resume();
-      try {
-        await handler.attach(socket);
-      } catch (e) {
-        socket.end();
-        throw e;
-      }
-    })().catch(console.error);
+    return super.execProtocolRawSync(message);
   }
+}();
 
-  socket.on("readable", onreadable);
+const server = new PGLiteSocketServer({
+  db,
+  debug: args.values.verbose,
+  inspect: args.values.verbose,
+  host,
+  port,
 });
 
-server.listen(port, host, () => {
-  const addr = server.address();
-  let addrText;
-  if (addr === null || typeof addr === "string") {
-    addrText = addr ?? "(unknown)";
-  } else {
-    addrText = `${addr.address}:${addr.port}`;
-  }
-  console.log(`Listening: ${addrText}`);
+process.on("SIGTERM", () => server.stop());
+process.on("SIGINT", () => server.stop());
+process.on("SIGQUIT", () => server.stop());
+process.on("SIGHUP", () => server.stop());
+
+server.addEventListener("listening", (event) => {
+  const { detail: { port, host } } = event as CustomEvent<
+    { port?: number; host?: string }
+  >;
+  console.log(`Listening: ${host}:${port}`);
 });
+
+server.addEventListener("connection", (event) => {
+  const { detail: { clientAddress, clientPort } } = event as CustomEvent<
+    { clientAddress?: string; clientPort?: number }
+  >;
+  // FIXME dpu Why?
+  console.log(`Connecting: ${clientAddress}:${clientPort}`);
+});
+
+server.addEventListener("error", (event) => {
+  console.error(event);
+});
+
+await server.start();
